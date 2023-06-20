@@ -39,74 +39,13 @@ type config struct {
 }
 
 var ErrAppNotFound = errors.New("Steam Store game not found")
-
-type SteamGame struct {
-	Type                string `json:"type"`
-	Name                string `json:"name"`
-	AppID               int    `json:"steam_appid"`
-	IsFree              bool   `json:"is_free"`
-	DetailedDescription string `json:"detailed_description"`
-	AboutTheGame        string `json:"about_the_game"`
-	ShortDescription    string `json:"short_description"`
-	HeaderImage         string `json:"header_image"`
-	Website             string `json:"website"`
-	Price               struct {
-		Currency         string `json:"currency"`
-		Initial          int    `json:"initial"`
-		Final            int    `json:"final"`
-		DiscountPercent  int    `json:"discount_percent"`
-		InitialFormatted string `json:"initial_formatted"`
-		FinalFormatted   string `json:"final_formatted"`
-	} `json:"price_overview"`
-	Platforms struct {
-		Windows bool `json:"windows"`
-		Mac     bool `json:"mac"`
-		Linux   bool `json:"linux"`
-	} `json:"platforms"`
-	Metacritic struct {
-		Score int `json:"score"`
-	} `json:"metacritic"`
-	Categories []struct {
-		ID          int    `json:"id"`
-		Description string `json:"description"`
-	} `json:"categories"`
-	Genres []struct {
-		Description string `json:"description"`
-	} `json:"genres"`
-	Screenshots []struct {
-		ID            int    `json:"id"`
-		PathThumbnail string `json:"path_thumbnail"`
-		PathFull      string `json:"path_full"`
-	} `json:"screenshots"`
-	ReleaseDate struct {
-		ComingSoon bool   `json:"coming_soon"`
-		Date       string `json:"date"`
-	} `json:"release_date"`
-}
-
-type SearchResult []struct {
-	AppID string `json:"appid"`
-	Name  string `json:"name"`
-	Icon  string `json:"icon"`
-	Logo  string `json:"logo"`
-}
-
-type SteamDetails map[string]struct {
-	Data    *SteamGame `json:"data"`
-	Success bool       `json:"success"`
-}
-
-type Server struct {
-	conf  config
-	users map[string]bool
-	ai    *openai.Client
-	bot   *tele.Bot
-}
+var timer *time.Ticker
+var lastCheck time.Time
 
 // launch bot with given parameters
-func (self Server) run() {
+func (s Server) run() {
 	pref := tele.Settings{
-		Token:  self.conf.TelegramBotToken,
+		Token:  s.conf.TelegramBotToken,
 		Poller: &tele.LongPoller{Timeout: 10 * time.Second},
 	}
 
@@ -115,7 +54,9 @@ func (self Server) run() {
 		log.Fatal(err)
 		return
 	}
-	self.bot = b
+	s.bot = b
+
+	log.Println("Bot is running")
 
 	b.Handle("/start", func(c tele.Context) error {
 		return c.Send(msgStart, "text", &tele.SendOptions{
@@ -124,18 +65,53 @@ func (self Server) run() {
 	})
 
 	b.Handle("/search", func(c tele.Context) error {
-		return self.searchGames(c, true, nil)
+		return s.searchGames(c, true, nil)
 	})
 	b.Handle("/s", func(c tele.Context) error {
-		return self.searchGames(c, true, nil)
+		return s.searchGames(c, true, nil)
 	})
 	b.Handle("/sa", func(c tele.Context) error {
-		return self.searchGames(c, false, nil)
+		return s.searchGames(c, false, nil)
+	})
+
+	b.Handle("/wb", func(c tele.Context) error {
+		response, err := s.getWorldBossInfo(c)
+		if err != nil {
+			log.Println(err)
+			return c.Send(err.Error(), "text", &tele.SendOptions{ReplyTo: c.Message()})
+		}
+		return c.Send(response, "text", &tele.SendOptions{ReplyTo: c.Message()})
+	})
+	b.Handle("/wbtrack", func(c tele.Context) error {
+		query := c.Message().Payload
+		if query == "on" {
+			if timer != nil {
+				return c.Send("Tracker is already started", "text", &tele.SendOptions{ReplyTo: c.Message()})
+			}
+
+			err := s.startWorldBossTracker(c)
+			if err != nil {
+				log.Println(err)
+			}
+			lastCheck = time.Now()
+
+			return err
+		} else if query == "off" {
+			if timer != nil {
+				timer.Stop()
+				return c.Send("Stopped tracker", "text", &tele.SendOptions{ReplyTo: c.Message()})
+			}
+			lastCheck = time.Time{}
+
+			return c.Send("Tracker is not started", "text", &tele.SendOptions{ReplyTo: c.Message()})
+		}
+
+		return c.Send(fmt.Sprintf("Last check on %s", lastCheck.Format("15:04")), "text", &tele.SendOptions{ReplyTo: c.Message()})
 	})
 
 	b.Handle(tele.OnText, func(c tele.Context) error {
 		if c.Message().IsReply() {
-			return self.searchGames(c, true, &c.Message().Text)
+			return s.searchGames(c, true, &c.Message().Text)
 		}
 		return nil
 	})
@@ -163,8 +139,8 @@ func (self Server) run() {
 
 			var game *SteamGame
 
-			if len(games) > 1 && self.isAllowed(c.Sender().Username) {
-				game = self.summarize(query, games)
+			if len(games) > 1 && s.isAllowed(c.Sender().Username) {
+				game = s.summarize(query, games)
 			} else if len(games) >= 1 {
 				game = games[0]
 			} else {
@@ -200,16 +176,16 @@ func (self Server) run() {
 
 }
 
-func (self Server) summarize(query string, games []*SteamGame) *SteamGame {
+func (s Server) summarize(query string, games []*SteamGame) *SteamGame {
 	prompt := "From those games:\n"
 	for _, game := range games {
 		prompt += fmt.Sprintf("Title: %s, App ID: %d\nRelease date: %s\n", game.Name, game.AppID, game.ReleaseDate.Date)
 	}
-	prompt += "\nWhich app ID is more relevant for the search “" + query + "”? Chose more recent game. Reply only with App ID please."
-	if self.conf.Verbose {
+	prompt += "\nWhich app ID is more relevant for the search “" + query + "”? Choose most recent game. Reply only with App ID please."
+	if s.conf.Verbose {
 		log.Printf("[verbose] Prompt: %s", prompt)
 	}
-	appID := self.answer(prompt, 31337)
+	appID := s.answer(prompt, 31337)
 	if len(appID) != 0 {
 		if game, err := getSteamGame(appID); err == nil {
 			return game
@@ -219,11 +195,11 @@ func (self Server) summarize(query string, games []*SteamGame) *SteamGame {
 	return nil
 }
 
-func (self Server) searchGames(c tele.Context, useGPT bool, reply *string) error {
+func (s Server) searchGames(c tele.Context, useGPT bool, reply *string) error {
 	c.Notify(tele.Typing)
 	query := c.Message().Payload
 	if reply != nil && len(*reply) > 3 {
-		if self.conf.Verbose {
+		if s.conf.Verbose {
 			log.Println("[verbose] Reply:", *reply)
 		}
 		query = *reply
@@ -256,23 +232,23 @@ func (self Server) searchGames(c tele.Context, useGPT bool, reply *string) error
 			return
 		}
 
-		if useGPT && len(games) > 1 && self.isAllowed(c.Sender().Username) {
-			game := self.summarize(query, games)
+		if useGPT && len(games) > 1 && s.isAllowed(c.Sender().Username) {
+			game := s.summarize(query, games)
 			if game != nil {
-				self.sendGame(c, game)
+				s.sendGame(c, game)
 				return
 			}
 		}
 
 		for _, game := range games {
-			self.sendGame(c, game)
+			s.sendGame(c, game)
 		}
 	}()
 
 	return nil
 }
 
-func (self Server) sendGame(c tele.Context, game *SteamGame) {
+func (s Server) sendGame(c tele.Context, game *SteamGame) {
 	genres := []string{}
 	for _, genre := range game.Genres {
 		genres = append(genres, genre.Description)
@@ -359,18 +335,18 @@ func searchSteamStore(query string) ([]*SteamGame, error) {
 }
 
 // generate an answer to given message and send it to the chat
-func (self Server) answer(message string, userID int64) string {
+func (s Server) answer(message string, userID int64) string {
 	msg := openai.NewChatUserMessage(message)
 
 	history := []openai.ChatMessage{}
 	history = append(history, msg)
 
-	response, err := self.ai.CreateChatCompletion(self.conf.Model, history, openai.ChatCompletionOptions{}.SetUser(userAgent(userID)))
+	response, err := s.ai.CreateChatCompletion(s.conf.Model, history, openai.ChatCompletionOptions{}.SetUser(userAgent(userID)))
 	if err != nil {
 		log.Printf("failed to create chat completion: %s", err)
 		return ""
 	}
-	if self.conf.Verbose {
+	if s.conf.Verbose {
 		log.Printf("[verbose] %s ===> %+v", message, response.Choices)
 	}
 
@@ -383,7 +359,7 @@ func (self Server) answer(message string, userID int64) string {
 		answer = "No response from API."
 	}
 
-	if self.conf.Verbose {
+	if s.conf.Verbose {
 		log.Printf("[verbose] sending answer: '%s'", answer)
 	}
 
@@ -391,8 +367,8 @@ func (self Server) answer(message string, userID int64) string {
 }
 
 // checks if given update is allowed or not
-func (self Server) isAllowed(username string) bool {
-	if _, exists := self.users[username]; exists {
+func (s Server) isAllowed(username string) bool {
+	if _, exists := s.users[username]; exists {
 		return true
 	}
 
@@ -402,4 +378,93 @@ func (self Server) isAllowed(username string) bool {
 // generate a user-agent value
 func userAgent(userID int64) string {
 	return fmt.Sprintf("telegram-steam-bot:%d", userID)
+}
+
+func getWorldBossEventInfo() (*WorldBoss, error) {
+	r, err := http.NewRequest("GET", "https://diablo4.life/api/trackers/worldBoss/list", nil)
+	r.Header.Set("Referer", "https://diablo4.life/trackers/world-bosses")
+	r.Header.Set("Authority", "diablo4.life")
+	r.Header.Set("Sec-Ch-Ua", "\"Chromium\";v=\"113\", \"Not-A.Brand\";v=\"24\"")
+
+	resp, err := http.DefaultClient.Do(r)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var response WorldBoss
+
+	decoder := json.NewDecoder(resp.Body)
+	if err := decoder.Decode(&response); err != nil {
+		return nil, err
+	}
+
+	return &response, nil
+}
+
+// get world boss info
+func (s Server) getWorldBossInfo(c tele.Context) (string, error) {
+	log.Println("Getting world boss info")
+
+	response, err := getWorldBossEventInfo()
+	if err != nil {
+		return "", err
+	}
+
+	if response.Event != nil && response.Event.Name != nil {
+		eventTime := time.UnixMilli(*response.Event.Time)
+		return fmt.Sprintf(
+			"%s appears in %s at %s", *response.Event.Name, *response.Event.Location, eventTime.Format("15:04 JST")), nil
+	}
+
+	if len(*response.LastEvent.Name) == 0 {
+		err := fmt.Errorf("World boss info not found")
+		return "", err
+	}
+
+	eventTime := time.UnixMilli(*response.LastEvent.Time)
+
+	return fmt.Sprintf("Last event: %s, at %s. \nPossible spawn times: %s, %s, %s, %s.",
+		*response.LastEvent.Name,
+		eventTime.Format("15:04 JST"),
+		eventTime.Add(time.Minute*324).Format("15:04 JST"),
+		eventTime.Add(time.Minute*354).Format("15:04 JST"),
+		eventTime.Add(time.Minute*444).Format("15:04 JST"),
+		eventTime.Add(time.Minute*474).Format("15:04 JST")), nil
+}
+
+// start world boss event tracker
+func (s Server) startWorldBossTracker(c tele.Context) error {
+	response, err := getWorldBossEventInfo()
+	if err != nil {
+		return err
+	}
+
+	if response.Event != nil && response.Event.Name != nil {
+		eventTime := time.UnixMilli(*response.Event.Time)
+		msg := fmt.Sprintf("%s appears in %s at %s", *response.Event.Name, *response.Event.Location, eventTime.Format("15:04 JST"))
+
+		return c.Send(msg, "text", &tele.SendOptions{ReplyTo: c.Message()})
+	}
+
+	timer = time.NewTicker(time.Minute * 10)
+	go func() {
+		for {
+			select {
+			case <-timer.C:
+				lastCheck = time.Now()
+				response, err := getWorldBossEventInfo()
+				if err != nil {
+					log.Println(err)
+					continue
+				}
+				if response.Event != nil && response.Event.Name != nil {
+					eventTime := time.UnixMilli(*response.Event.Time)
+					msg := fmt.Sprintf("%s appears in %s at %s", *response.Event.Name, *response.Event.Location, eventTime.Format("15:04 JST"))
+					c.Send(msg, "text", &tele.SendOptions{ReplyTo: c.Message()})
+				}
+			}
+		}
+	}()
+
+	return c.Send("Started tracking", "text", &tele.SendOptions{ReplyTo: c.Message()})
 }

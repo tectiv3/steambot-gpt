@@ -4,6 +4,7 @@ package main
 
 import (
 	"encoding/json"
+	"github.com/recoilme/pudge"
 	"log"
 	"os"
 
@@ -24,10 +25,16 @@ func main() {
 			allowedUsers[user] = true
 		}
 
+		db, err := pudge.Open("bot.db", &pudge.Config{})
+		if err != nil {
+			log.Panic(err)
+		}
+
 		server := &Server{
 			conf:  conf,
 			ai:    openai.NewClient(apiKey, orgID),
 			users: allowedUsers,
+			db:    db,
 		}
 
 		server.run()

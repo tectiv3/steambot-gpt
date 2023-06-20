@@ -6,3 +6,5 @@ require (
 	github.com/meinside/openai-go v0.0.4
 	gopkg.in/telebot.v3 v3.1.3
 )
+
+require github.com/recoilme/pudge v1.0.3 // indirect
