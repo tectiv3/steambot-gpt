@@ -75,7 +75,7 @@ func (s Server) run() {
 	})
 
 	b.Handle("/wb", func(c tele.Context) error {
-		response, err := s.getWorldBossInfo(c)
+		response, err := s.getWorldBossInfo()
 		if err != nil {
 			log.Println(err)
 			return c.Send(err.Error(), "text", &tele.SendOptions{ReplyTo: c.Message()})
@@ -99,6 +99,8 @@ func (s Server) run() {
 		} else if query == "off" {
 			if timer != nil {
 				timer.Stop()
+				timer = nil
+
 				return c.Send("Stopped tracker", "text", &tele.SendOptions{ReplyTo: c.Message()})
 			}
 			lastCheck = time.Time{}
@@ -378,93 +380,4 @@ func (s Server) isAllowed(username string) bool {
 // generate a user-agent value
 func userAgent(userID int64) string {
 	return fmt.Sprintf("telegram-steam-bot:%d", userID)
-}
-
-func getWorldBossEventInfo() (*WorldBoss, error) {
-	r, err := http.NewRequest("GET", "https://diablo4.life/api/trackers/worldBoss/list", nil)
-	r.Header.Set("Referer", "https://diablo4.life/trackers/world-bosses")
-	r.Header.Set("Authority", "diablo4.life")
-	r.Header.Set("Sec-Ch-Ua", "\"Chromium\";v=\"113\", \"Not-A.Brand\";v=\"24\"")
-
-	resp, err := http.DefaultClient.Do(r)
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	var response WorldBoss
-
-	decoder := json.NewDecoder(resp.Body)
-	if err := decoder.Decode(&response); err != nil {
-		return nil, err
-	}
-
-	return &response, nil
-}
-
-// get world boss info
-func (s Server) getWorldBossInfo(c tele.Context) (string, error) {
-	log.Println("Getting world boss info")
-
-	response, err := getWorldBossEventInfo()
-	if err != nil {
-		return "", err
-	}
-
-	if response.Event != nil && response.Event.Name != nil {
-		eventTime := time.UnixMilli(*response.Event.Time)
-		return fmt.Sprintf(
-			"%s appears in %s at %s", *response.Event.Name, *response.Event.Location, eventTime.Format("15:04 JST")), nil
-	}
-
-	if len(*response.LastEvent.Name) == 0 {
-		err := fmt.Errorf("World boss info not found")
-		return "", err
-	}
-
-	eventTime := time.UnixMilli(*response.LastEvent.Time)
-
-	return fmt.Sprintf("Last event: %s, at %s. \nPossible spawn times: %s, %s, %s, %s.",
-		*response.LastEvent.Name,
-		eventTime.Format("15:04 JST"),
-		eventTime.Add(time.Minute*324).Format("15:04 JST"),
-		eventTime.Add(time.Minute*354).Format("15:04 JST"),
-		eventTime.Add(time.Minute*444).Format("15:04 JST"),
-		eventTime.Add(time.Minute*474).Format("15:04 JST")), nil
-}
-
-// start world boss event tracker
-func (s Server) startWorldBossTracker(c tele.Context) error {
-	response, err := getWorldBossEventInfo()
-	if err != nil {
-		return err
-	}
-
-	if response.Event != nil && response.Event.Name != nil {
-		eventTime := time.UnixMilli(*response.Event.Time)
-		msg := fmt.Sprintf("%s appears in %s at %s", *response.Event.Name, *response.Event.Location, eventTime.Format("15:04 JST"))
-
-		return c.Send(msg, "text", &tele.SendOptions{ReplyTo: c.Message()})
-	}
-
-	timer = time.NewTicker(time.Minute * 10)
-	go func() {
-		for {
-			select {
-			case <-timer.C:
-				lastCheck = time.Now()
-				response, err := getWorldBossEventInfo()
-				if err != nil {
-					log.Println(err)
-					continue
-				}
-				if response.Event != nil && response.Event.Name != nil {
-					eventTime := time.UnixMilli(*response.Event.Time)
-					msg := fmt.Sprintf("%s appears in %s at %s", *response.Event.Name, *response.Event.Location, eventTime.Format("15:04 JST"))
-					c.Send(msg, "text", &tele.SendOptions{ReplyTo: c.Message()})
-				}
-			}
-		}
-	}()
-
-	return c.Send("Started tracking", "text", &tele.SendOptions{ReplyTo: c.Message()})
 }

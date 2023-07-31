@@ -72,14 +72,16 @@ type Server struct {
 
 type Event struct {
 	ID       int64
-	Name     *string `json:"name,omitempty"`
-	Time     *int64  `json:"time,omitempty"`
-	Location *string `json:"location,omitempty"`
+	Name     string `json:"name,omitempty"`
+	Time     int64  `json:"time,omitempty"`
+	Location string `json:"location,omitempty"`
 }
 
 type WorldBoss struct {
-	Event     *Event `json:"event,omitempty"`
-	LastEvent *Event `json:"lastEvent,omitempty"`
+	NextSpawn string  `json:"nextSpawn"`
+	NextDiff  float64 `json:"nextDiff"`
+	TimeLeft  float64 `json:"timeLeft"`
+	Event     *Event  `json:"previousEvent"`
 }
 
 type User struct {
