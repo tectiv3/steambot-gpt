@@ -3,55 +3,73 @@ package main
 import (
 	"encoding/json"
 	"fmt"
-	"github.com/recoilme/pudge"
 	tele "gopkg.in/telebot.v3"
 	"log"
-	"net/http"
+	"os"
+	"os/exec"
 	"time"
 )
 
-func (s Server) startWBTimer() {
-	defer func() {
-		recover()
-	}()
+//func (s Server) startWBTimer() {
+//	defer func() {
+//		recover()
+//	}()
+//
+//	_, err := getWorldBossEventInfo()
+//	if err != nil {
+//		log.Println(err)
+//	} else {
+//		//if wb != nil {
+//		//	_ = pudge.Set("events", wb.Time, wb)
+//		//}
+//	}
+//	for range time.NewTicker(3600 * time.Second).C {
+//		_, err = getWorldBossEventInfo()
+//		if err != nil {
+//			log.Println(err)
+//		}
+//		//if wb.Event != nil {
+//		//	_ = pudge.Set("events", wb.Event.Time, wb.Event)
+//		//}
+//	}
+//}
 
-	wb, err := getWorldBossEventInfo()
-	if err != nil {
-		log.Println(err)
-	} else {
-		if wb.Event != nil {
-			_ = pudge.Set("events", wb.Event.Time, wb.Event)
-		}
-	}
-	for range time.NewTicker(3600 * time.Second).C {
-		wb, err = getWorldBossEventInfo()
-		if err != nil {
-			log.Println(err)
-		}
-		if wb.Event != nil {
-			_ = pudge.Set("events", wb.Event.Time, wb.Event)
-		}
-	}
-}
+//func getWorldBossEventInfo() (*Event, error) {
+//	r, err := http.NewRequest("GET", "https://api.worldstone.io/world-bosses/", nil)
+//	r.Header.Set("Referer", "https://diablo4.life/trackers/world-bosses")
+//	r.Header.Set("Authority", "api.worldstone.io")
+//	r.Header.Set("Sec-Ch-Ua", "\"Chromium\";v=\"113\", \"Not-A.Brand\";v=\"24\"")
+//
+//	resp, err := http.DefaultClient.Do(r)
+//	if err != nil {
+//		return nil, err
+//	}
+//	defer resp.Body.Close()
+//	var response Event
+//
+//	decoder := json.NewDecoder(resp.Body)
+//	if err := decoder.Decode(&response); err != nil {
+//		return nil, err
+//	}
+//
+//	return &response, nil
+//}
 
-func getWorldBossEventInfo() (*WorldBoss, error) {
-	r, err := http.NewRequest("GET", "https://diablo4.life/api/trackers/worldBoss/upcomming", nil)
-	r.Header.Set("Referer", "https://diablo4.life/trackers/world-bosses")
-	r.Header.Set("Authority", "diablo4.life")
-	r.Header.Set("Sec-Ch-Ua", "\"Chromium\";v=\"113\", \"Not-A.Brand\";v=\"24\"")
+func (s Server) getWorldBossEventInfo() (*Event, error) {
+	cmd := exec.Command(s.conf.Python, s.conf.Bosspy, "--single")
+	cmd.Stderr = os.Stderr
 
-	resp, err := http.DefaultClient.Do(r)
+	out, err := cmd.Output()
 	if err != nil {
 		return nil, err
 	}
-	defer resp.Body.Close()
-	var response WorldBoss
-
-	decoder := json.NewDecoder(resp.Body)
-	if err := decoder.Decode(&response); err != nil {
+	if len(out) == 0 {
+		return nil, fmt.Errorf("empty output")
+	}
+	var response Event
+	if err := json.Unmarshal(out, &response); err != nil {
 		return nil, err
 	}
-
 	return &response, nil
 }
 
@@ -59,31 +77,27 @@ func getWorldBossEventInfo() (*WorldBoss, error) {
 func (s Server) getWorldBossInfo() (string, error) {
 	log.Println("Getting world boss info")
 
-	response, err := getWorldBossEventInfo()
+	response, err := s.getWorldBossEventInfo()
 	if err != nil {
 		return "", err
 	}
 
-	next := time.UnixMilli(response.Event.Time + int64(response.NextDiff))
-
-	return fmt.Sprintf("Last event: %s in %s at %s. \nNext spawn: %s, at %s.",
-		response.Event.Name,
-		response.Event.Location,
-		time.UnixMilli(response.Event.Time).Format("15:04 JST"),
-		response.NextSpawn,
-		next.Format("15:04 JST")), nil
+	return fmt.Sprintf("Next spawn: %s, at %s.",
+		response.Name,
+		time.Now().Add(time.Duration(response.Time)*time.Minute).Format("15:04 JST"),
+	), nil
 }
 
 // start world boss event tracker
 func (s Server) startWorldBossTracker(c tele.Context) error {
-	info, err := getWorldBossEventInfo()
+	info, err := s.getWorldBossEventInfo()
 	if err != nil {
 		return err
 	}
-	next := time.UnixMilli(info.Event.Time + int64(info.NextDiff))
+	next := time.Now().Add(time.Duration(info.Time) * time.Minute)
 	log.Println(next.Format("15:04 JST"))
 	// get difference between now and next event
-	nextEvent := next.Sub(time.Now())
+	nextEvent := time.Duration(info.Time) * time.Minute
 
 	// check if next event is more than 15 minutes away, if so, subtract 15 minutes
 	if nextEvent > time.Minute*15 {
@@ -94,36 +108,35 @@ func (s Server) startWorldBossTracker(c tele.Context) error {
 
 	//timer = time.NewTicker(time.Minute * 10)
 	go func() {
-		for {
-			select {
-			case t := <-timer.C:
-				lastCheck = t
-				response, err := s.getWorldBossInfo()
-				if err != nil {
-					log.Println(err)
-					continue
-				}
-
-				_ = c.Send(response, "text", &tele.SendOptions{ReplyTo: c.Message()})
-				// restart the timer in 30 minutes
-				go s.restartTimer(c)
+		select {
+		case t := <-timer.C:
+			lastCheck = t
+			response, err := s.getWorldBossInfo()
+			if err != nil {
+				log.Println(err)
+				timer.Stop()
+				timer = nil
+				return
 			}
+
+			_ = c.Send(response)
+			timer.Stop()
+			// restart the timer in 30 minutes
+			go s.restartTimer(c)
 		}
 	}()
 
-	return c.Send("Started tracking, next event in "+nextEvent.String(),
-		"text",
-		&tele.SendOptions{ReplyTo: c.Message()})
+	return c.Send("Started tracking, next event in " + nextEvent.String())
 }
 
 func (s Server) restartTimer(c tele.Context) {
 	r := time.NewTicker(time.Minute * 30)
 	log.Println("Restarting timer")
-	for {
-		select {
-		case <-r.C:
-			log.Println("Time to restart the timer")
-			_ = s.startWorldBossTracker(c)
-		}
+	select {
+	case <-r.C:
+		log.Println("Time to restart the timer")
+		_ = s.startWorldBossTracker(c)
+		r.Stop()
+		return
 	}
 }

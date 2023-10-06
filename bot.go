@@ -23,21 +23,6 @@ const (
 	msgStart  = "This bot will search games on steam"
 )
 
-// config struct for loading a configuration file
-type config struct {
-	// telegram bot api
-	TelegramBotToken string `json:"telegram_bot_token"`
-
-	// openai api
-	OpenAIAPIKey         string `json:"openai_api_key"`
-	OpenAIOrganizationID string `json:"openai_org_id"`
-
-	// other configurations
-	AllowedTelegramUsers []string `json:"allowed_telegram_users"`
-	Verbose              bool     `json:"verbose,omitempty"`
-	Model                string   `json:"openai_model"`
-}
-
 var ErrAppNotFound = errors.New("Steam Store game not found")
 var timer *time.Ticker
 var lastCheck time.Time
@@ -57,6 +42,8 @@ func (s Server) run() {
 	s.bot = b
 
 	log.Println("Bot is running")
+
+	//go s.startWorldBossTracker(c)
 
 	b.Handle("/start", func(c tele.Context) error {
 		return c.Send(msgStart, "text", &tele.SendOptions{
@@ -80,35 +67,17 @@ func (s Server) run() {
 			log.Println(err)
 			return c.Send(err.Error(), "text", &tele.SendOptions{ReplyTo: c.Message()})
 		}
-		return c.Send(response, "text", &tele.SendOptions{ReplyTo: c.Message()})
+
+		return c.Send(response)
 	})
 	b.Handle("/wbtrack", func(c tele.Context) error {
-		query := c.Message().Payload
-		if query == "on" {
-			if timer != nil {
-				return c.Send("Tracker is already started", "text", &tele.SendOptions{ReplyTo: c.Message()})
-			}
-
-			err := s.startWorldBossTracker(c)
-			if err != nil {
-				log.Println(err)
-			}
-			lastCheck = time.Now()
-
-			return err
-		} else if query == "off" {
-			if timer != nil {
-				timer.Stop()
-				timer = nil
-
-				return c.Send("Stopped tracker", "text", &tele.SendOptions{ReplyTo: c.Message()})
-			}
-			lastCheck = time.Time{}
-
-			return c.Send("Tracker is not started", "text", &tele.SendOptions{ReplyTo: c.Message()})
+		if timer != nil {
+			timer.Stop()
+			timer = nil
+			return c.Send("Stopped tracker")
 		}
 
-		return c.Send(fmt.Sprintf("Last check on %s", lastCheck.Format("15:04")), "text", &tele.SendOptions{ReplyTo: c.Message()})
+		return s.startWorldBossTracker(c)
 	})
 
 	b.Handle(tele.OnText, func(c tele.Context) error {

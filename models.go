@@ -6,6 +6,23 @@ import (
 	tele "gopkg.in/telebot.v3"
 )
 
+// config struct for loading a configuration file
+type config struct {
+	// telegram bot api
+	TelegramBotToken string `json:"telegram_bot_token"`
+
+	// openai api
+	OpenAIAPIKey         string `json:"openai_api_key"`
+	OpenAIOrganizationID string `json:"openai_org_id"`
+
+	// other configurations
+	AllowedTelegramUsers []string `json:"allowed_telegram_users"`
+	Verbose              bool     `json:"verbose,omitempty"`
+	Model                string   `json:"openai_model"`
+	Python               string   `json:"python"`
+	Bosspy               string   `json:"bosspy"`
+}
+
 type SteamGame struct {
 	Type                string `json:"type"`
 	Name                string `json:"name"`
@@ -71,7 +88,6 @@ type Server struct {
 }
 
 type Event struct {
-	ID       int64
 	Name     string `json:"name,omitempty"`
 	Time     int64  `json:"time,omitempty"`
 	Location string `json:"location,omitempty"`
